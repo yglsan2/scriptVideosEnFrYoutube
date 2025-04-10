@@ -1,0 +1,175 @@
+// ==UserScript==
+// @name         YouTube – Filtre Audio Français + Interface Bootstrap
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Filtre vidéos youtube en français et sans faux français, sans fausse indication française, pas de sous-titres en fr
+// @author       yglsan
+// @match        https://www.youtube.com/*
+// @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getResourceURL
+// @connect      cdn.jsdelivr.net
+// @resource     bootstrapCSS https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css
+// @resource     bootstrapJS https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    /** CONFIGURATION **/
+    const config = {
+        debug: false,
+        showHiddenAsFaded: false,
+        filterActive: true
+    };
+
+    /** UTILITY **/
+    function log(...args) {
+        if (config.debug) console.log('[FR Filter]', ...args);
+    }
+
+    function normalize(text) {
+        return text
+            .toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .trim();
+    }
+
+    function shouldHideVideo(video) {
+        const textContent = normalize(video.innerText || "");
+
+        const isSubOnly =
+            (
+                textContent.includes("sous-titre francais") ||
+                textContent.includes("sous-titres : francais") ||
+                textContent.includes("subtitles: french") ||
+                textContent.includes("francais (sous-titres)") ||
+                textContent.includes("captions: french")
+            )
+            &&
+            !(
+                textContent.includes("audio : francais") ||
+                textContent.includes("langue : francais") ||
+                textContent.includes("audio francais") ||
+                textContent.includes("voix francaise") ||
+                textContent.includes("version francaise") ||
+                textContent.includes("vf")
+            );
+
+        return isSubOnly;
+    }
+
+    function filterVideos() {
+        if (!config.filterActive) return;
+
+        const selectors = [
+            'ytd-video-renderer',
+            'ytd-grid-video-renderer',
+            'ytd-rich-item-renderer',
+            'ytd-compact-video-renderer'
+        ];
+
+        const videos = document.querySelectorAll(selectors.join(', '));
+
+        videos.forEach(video => {
+            if (video.dataset.frFilterProcessed) return;
+            video.dataset.frFilterProcessed = "true";
+
+            if (shouldHideVideo(video)) {
+                log("Cachée :", video.querySelector('#video-title')?.innerText);
+                
+                if (config.showHiddenAsFaded) {
+                    video.style.opacity = '0.3';
+                    video.style.pointerEvents = 'none';
+                } else {
+                    video.style.display = 'none';
+                }
+            }
+        });
+    }
+
+    /** OBSERVATEUR MUTATION **/
+    const observer = new MutationObserver(filterVideos);
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    /** CHARGEMENT DE BOOTSTRAP (CORRIGÉ) **/
+    function loadBootstrap() {
+        return new Promise((resolve) => {
+            // Chargement du CSS
+            const cssURL = GM_getResourceURL('bootstrapCSS');
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = cssURL;
+            document.head.appendChild(link);
+
+            // Chargement du JS
+            const jsURL = GM_getResourceURL('bootstrapJS');
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: jsURL,
+                onload: function(response) {
+                    const script = document.createElement('script');
+                    script.textContent = response.responseText;
+                    document.body.appendChild(script);
+                    resolve();
+                }
+            });
+        });
+    }
+
+    /** INTERFACE DE CONTRÔLE **/
+    function createControlButton() {
+        const controlPanel = document.createElement('div');
+        controlPanel.innerHTML = `
+            <div class="fixed-bottom p-3" style="z-index: 10000;">
+                <button id="toggleFilterBtn" class="btn btn-primary btn-sm">
+                    ${config.filterActive ? 'Désactiver' : 'Activer'} le filtre
+                </button>
+                <span id="statusText" class="ms-2 text-light">${config.filterActive ? 'Filtre activé' : 'Filtre désactivé'}</span>
+            </div>
+        `;
+        document.body.appendChild(controlPanel);
+
+        document.getElementById('toggleFilterBtn').addEventListener('click', () => {
+            config.filterActive = !config.filterActive;
+            document.getElementById('statusText').textContent = config.filterActive ? 'Filtre activé' : 'Filtre désactivé';
+            document.getElementById('toggleFilterBtn').textContent = config.filterActive ? 'Désactiver' : 'Activer le filtre';
+            filterVideos();
+        });
+    }
+
+    /** RACCOURCIS CLAVIER **/
+    function setupKeyboardShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'F') {
+                config.filterActive = !config.filterActive;
+                document.getElementById('statusText').textContent = config.filterActive ? 'Filtre activé' : 'Filtre désactivé';
+                document.getElementById('toggleFilterBtn').textContent = config.filterActive ? 'Désactiver' : 'Activer le filtre';
+                filterVideos();
+            }
+        });
+    }
+
+    /** INITIALISATION **/
+    window.addEventListener('load', async function() {
+        await loadBootstrap();
+        createControlButton();
+        setupKeyboardShortcuts();
+        filterVideos();
+    });
+
+    /** STYLES COMPLÉMENTAIRES **/
+    GM_addStyle(`
+        .fixed-bottom {
+            right: 20px;
+            bottom: 20px;
+            left: auto;
+            width: auto;
+            background: rgba(0,0,0,0.7);
+            border-radius: 8px;
+        }
+        #toggleFilterBtn {
+            min-width: 120px;
+        }
+    `);
+})();
