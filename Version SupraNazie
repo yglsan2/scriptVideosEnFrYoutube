@@ -1,0 +1,211 @@
+// ==UserScript==
+// @name         YouTube – Filtre France Métropolitaine Strict
+// @namespace    http://tampermonkey.net/
+// @version      6.0
+// @description  Filtre tous les contenus non-métropolitains et accents régionaux, ou non
+// @author       yglsan
+// @match        https://www.youtube.com/*
+// @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getResourceURL
+// @connect      cdn.jsdelivr.net
+// @resource     bootstrapCSS https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css
+// @resource     bootstrapJS https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // CONFIGURATION
+    const config = {
+        debug: false,
+        showHiddenAsFaded: false,
+        filterActive: true
+    };
+
+    // LISTE COMPLÈTE DES RÉGIONS/ACCENTS À FILTRER
+    const filteredPatterns = [
+        // Régions ultramarines
+        'guadeloupe', 'martinique', 'guyane', 'réunion', 'mayotte',
+        'nouvelle calédonie', 'polynésie française', 'saint pierre et miquelon',
+        'wallis et futuna', 'saint barthélemy', 'saint martin',
+        
+        // Accents et particularismes linguistiques
+        'accent antillais', 'accent créole', 'accent réunionnais',
+        'accent tahitien', 'accent mahorais', 'accent calédonien',
+        'accent ch'ti', 'accent méridional', 'accent marseillais',
+        'accent corse', 'accent alsacien', 'accent basque',
+        
+        // Termes associés
+        'département doutre mer', 'dom tom', 'collectivité doutre mer',
+        'territoire doutre mer', 'creole', 'pidgin', 'patwa'
+    ].map(normalize);
+
+    // RÉGIONS AUTORISÉES (France métropolitaine)
+    const allowedRegions = [
+        'auvergne rhone alpes', 'bourgogne franche comte', 'bretagne',
+        'centre val de loire', 'grand est', 'hauts de france',
+        'ile de france', 'normandie', 'nouvelle aquitaine',
+        'occitanie', 'pays de la loire', 'provence alpes cote dazur'
+    ].map(normalize);
+
+    // FONCTIONS UTILITAIRES
+    function log(...args) {
+        if (config.debug) console.log('[FR Filter]', ...args);
+    }
+
+    function normalize(text) {
+        return text
+            .toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^a-z0-9]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function hasMetropolitanFrench(text) {
+        const patterns = [
+            'audio francais metropolitain',
+            'doublage parisien',
+            'version france',
+            'studio paris',
+            'vf originale'
+        ];
+        return patterns.some(p => text.includes(p));
+    }
+
+    function shouldHideVideo(video) {
+        const text = normalize(video.innerText || "");
+
+        // 1. Vérification origine autorisée
+        const isFromAllowedRegion = allowedRegions.some(r => text.includes(r)) || 
+            text.includes('paris') || 
+            text.includes('france metropolitaine');
+
+        // 2. Détection éléments à filtrer
+        const hasForbiddenElements = filteredPatterns.some(p => text.includes(p));
+
+        // 3. Sous-titres uniquement
+        const isSubOnly = (
+            text.includes('sous titre francais') ||
+            text.includes('subtitles french')
+        ) && !hasMetropolitanFrench(text);
+
+        return (!isFromAllowedRegion && hasForbiddenElements) || isSubOnly;
+    }
+
+    // FILTRAGE DES VIDÉOS
+    function filterVideos() {
+        if (!config.filterActive) return;
+
+        const selectors = [
+            'ytd-video-renderer',
+            'ytd-grid-video-renderer',
+            'ytd-rich-item-renderer',
+            'ytd-compact-video-renderer'
+        ];
+
+        document.querySelectorAll(selectors.join(', ')).forEach(video => {
+            if (video.dataset.frFilterProcessed) return;
+            video.dataset.frFilterProcessed = "true";
+
+            if (shouldHideVideo(video)) {
+                log("Caché :", video.querySelector('#video-title')?.innerText);
+                
+                config.showHiddenAsFaded ?
+                    (video.style.opacity = '0.3', video.style.pointerEvents = 'none') :
+                    (video.style.display = 'none');
+            }
+        });
+    }
+
+    // OBSERVATEUR DE CHANGEMENTS
+    const observer = new MutationObserver(filterVideos);
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // CHARGEMENT BOOTSTRAP
+    function loadBootstrap() {
+        return new Promise((resolve) => {
+            const cssURL = GM_getResourceURL('bootstrapCSS');
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = cssURL;
+            document.head.appendChild(link);
+
+            const jsURL = GM_getResourceURL('bootstrapJS');
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: jsURL,
+                onload: function(response) {
+                    const script = document.createElement('script');
+                    script.textContent = response.responseText;
+                    document.body.appendChild(script);
+                    resolve();
+                }
+            });
+        });
+    }
+
+    // PANEL DE CONTRÔLE
+    function createControlButton() {
+        const panel = document.createElement('div');
+        panel.innerHTML = `
+            <div class="fixed-bottom p-3" style="z-index:10000;right:20px;bottom:20px;left:auto;width:auto;background:rgba(0,0,0,0.7);border-radius:8px;">
+                <button id="toggleFilterBtn" class="btn btn-primary btn-sm">
+                    ${config.filterActive ? 'Désactiver' : 'Activer'}
+                </button>
+                <span id="statusText" class="ms-2 text-light">
+                    ${config.filterActive ? 'Filtre ACTIF' : 'Filtre INACTIF'}
+                </span>
+            </div>
+        `;
+        document.body.appendChild(panel);
+
+        document.getElementById('toggleFilterBtn').addEventListener('click', () => {
+            config.filterActive = !config.filterActive;
+            document.getElementById('statusText').textContent = 
+                config.filterActive ? 'Filtre ACTIF' : 'Filtre INACTIF';
+            document.getElementById('toggleFilterBtn').textContent = 
+                config.filterActive ? 'Désactiver' : 'Activer';
+            filterVideos();
+        });
+    }
+
+    // RACCOURCI CLAVIER
+    function setupKeyboardShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'F') {
+                config.filterActive = !config.filterActive;
+                document.getElementById('statusText').textContent = 
+                    config.filterActive ? 'Filtre ACTIF' : 'Filtre INACTIF';
+                document.getElementById('toggleFilterBtn').textContent = 
+                    config.filterActive ? 'Désactiver' : 'Activer';
+                filterVideos();
+            }
+        });
+    }
+
+    // INITIALISATION
+    window.addEventListener('load', async function() {
+        await loadBootstrap();
+        createControlButton();
+        setupKeyboardShortcuts();
+        filterVideos();
+    });
+
+    // STYLES COMPLÉMENTAIRES
+    GM_addStyle(`
+        ytd-video-renderer[data-fr-filter-processed="true"] {
+            transition: opacity 0.4s ease-in-out;
+        }
+        #toggleFilterBtn {
+            min-width: 130px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        .fixed-bottom {
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.1) !important;
+        }
+    `);
+})();
